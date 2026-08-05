@@ -1,0 +1,24 @@
+{
+  "_comment": "Example Vapi assistant config wiring the voice agent to this project's RAG backend. Create the assistant in the Vapi dashboard (or via their API) and set the model to a Custom LLM whose URL is your deployed backend's /chat/completions endpoint. Replace the placeholders.",
+  "name": "Delphi",
+  "firstMessage": "Hi, I'm Delphi. Ask me anything about your documents.",
+  "model": {
+    "provider": "custom-llm",
+    "url": "https://YOUR-BACKEND-URL/chat/completions",
+    "model": "delphi-rag",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are Delphi, a helpful voice assistant. Answer only from the knowledge the backend retrieves."
+      }
+    ]
+  },
+  "transcriber": {
+    "provider": "deepgram",
+    "model": "nova-2"
+  },
+  "voice": {
+    "provider": "vapi",
+    "voiceId": "Elliot"
+  }
+}
