@@ -1,0 +1,29 @@
+# Render blueprint for the Delphi RAG voice backend.
+# Deploy: push to GitHub, then on render.com use "New +" -> "Blueprint" and
+# point it at this repo. Render reads this file and creates the service.
+#
+# Set GROQ_API_KEY and GEMINI_API_KEY (and optionally BACKEND_SECRET) in the
+# Render dashboard when prompted; they are marked sync:false so they are never
+# stored in git.
+
+services:
+  - type: web
+    name: delphi-backend
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements-backend.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: BACKEND_SECRET
+        sync: false
+      - key: RETRIEVE_K
+        value: "4"
+      - key: RAG_STORE_DIR
+        value: "rag_store"

@@ -1,37 +1,28 @@
-"""Delphi - Streamlit companion UI for the voice RAG assistant.
+"""Delphi - companion UI (thin client of the backend).
 
-This is the optional text-and-management surface: upload the documents the
-assistant answers from, try the RAG in text form, and launch the Vapi voice
-widget. The voice loop itself runs through Vapi talking to server.py; this app
-shares the same vector store, so a document added here is available to voice.
+This app holds no keys and runs no RAG itself. It talks to the deployed backend
+(server.py on Render) over HTTP: it lists / uploads / deletes documents, sends
+chat questions, and launches the Vapi voice widget. Because the backend is the
+single source of truth, a document added here is the same one the voice agent
+answers from.
+
+Point it at your backend by setting BACKEND_URL (in secrets or the sidebar).
 """
 
 from __future__ import annotations
 
 import os
 
+import httpx
 import streamlit as st
 import streamlit.components.v1 as components
 
-from document_loader import DocumentError
-from embeddings import Embedder, EmbeddingError
-from llm import Generator
-from rag import RAGPipeline
-from vector_store import VectorStore, VectorStoreError
-
 st.set_page_config(page_title="Delphi", page_icon="◼", layout="wide")
-
-# --------------------------------------------------------------------------
-# Styling: dark, boxy, Notion-like.
-# --------------------------------------------------------------------------
 
 st.markdown(
     """
     <style>
-      :root {
-        --bg:#191919; --panel:#202020; --ink:#e6e6e4; --muted:#979692;
-        --line:#333230; --line-soft:#2a2a29;
-      }
+      :root { --bg:#191919; --panel:#202020; --ink:#e6e6e4; --muted:#979692; --line:#333230; --line-soft:#2a2a29; }
       .stApp { background: var(--bg); color: var(--ink); }
       #MainMenu, footer { visibility: hidden; }
       [data-testid="stHeader"] { background: transparent; }
@@ -41,119 +32,117 @@ st.markdown(
       }
       .stButton button, [data-testid="stChatInput"], [data-baseweb="input"], input, textarea,
       [data-testid="stExpander"], [data-testid="stFileUploaderDropzone"],
-      [data-baseweb="tab-list"], [data-baseweb="tab"], .stAlert {
-        border-radius: 0 !important;
-      }
+      [data-baseweb="tab-list"], [data-baseweb="tab"], .stAlert { border-radius: 0 !important; }
       .brand { font-size: 2.3rem; font-weight: 700; letter-spacing: -0.02em; line-height: 1; }
       .tagline { color: var(--muted); font-size: 0.95rem; margin-top: 0.5rem; max-width: 64ch; }
       .rule { border-bottom: 1px solid var(--line); margin: 1.1rem 0 0.4rem; }
-      .label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.13em;
-               color: var(--muted); font-weight: 600; margin: 0.2rem 0 0.5rem; }
-      [data-testid="stExpander"] { border: 1px solid var(--line); background: var(--panel); }
+      .label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.13em; color: var(--muted);
+               font-weight: 600; margin: 0.2rem 0 0.5rem; }
       [data-testid="stChatMessage"] { border: 1px solid var(--line-soft); background: var(--panel);
                                        padding: 0.6rem 0.9rem; margin-bottom: 0.5rem; }
-      .doc-row { border: 1px solid var(--line); background: var(--panel); padding: 8px 11px;
-                 margin-bottom: 6px; font-size: 0.85rem; line-height: 1.4; }
+      .doc-row { border: 1px solid var(--line); background: var(--panel); padding: 8px 11px; margin-bottom: 6px;
+                 font-size: 0.85rem; line-height: 1.4; }
       .doc-row .name { color: var(--ink); font-weight: 500; word-break: break-all; }
       .doc-row .meta { color: var(--muted); font-size: 0.78rem; }
-      .notebox { border: 1px solid var(--line); background: var(--panel); padding: 14px 16px;
-                 color: var(--muted); font-size: 0.9rem; line-height: 1.6; }
-      .metaline { border: 1px solid var(--line-soft); background: var(--panel); padding: 7px 10px;
-                  margin-top: 6px; color: var(--muted); font-size: 0.78rem; }
+      .notebox { border: 1px solid var(--line); background: var(--panel); padding: 14px 16px; color: var(--muted);
+                 font-size: 0.9rem; line-height: 1.6; }
+      .metaline { border: 1px solid var(--line-soft); background: var(--panel); padding: 7px 10px; margin-top: 6px;
+                  color: var(--muted); font-size: 0.78rem; }
       .stButton button { border: 1px solid var(--line); background: var(--panel); color: var(--ink); font-weight: 500; }
       .stButton button:hover { border-color: var(--muted); color: #fff; background: #262625; }
       [data-testid="stSidebar"] { background: #1c1c1b; border-right: 1px solid var(--line); }
       [data-baseweb="tab-list"] { border-bottom: 1px solid var(--line); gap: 0; }
-      ol, ul { color: var(--ink); }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
+
 # --------------------------------------------------------------------------
-# Keys
+# Backend configuration
 # --------------------------------------------------------------------------
 
-KEY_SPECS = {
-    "GROQ_API_KEY": {"state": "groq_key", "widget": "groq_in", "label": "Groq API key (LLM)", "help": "console.groq.com/keys"},
-    "GEMINI_API_KEY": {"state": "gemini_key", "widget": "gemini_in", "label": "Gemini API key (embeddings)", "help": "aistudio.google.com/apikey"},
-}
 
-
-def resolve_key(env_name: str) -> str | None:
-    spec = KEY_SPECS[env_name]
-    if st.session_state.get(spec["state"]):
-        return st.session_state[spec["state"]]
+def resolve_backend() -> tuple[str, str]:
+    url = st.session_state.get("backend_url")
+    if not url:
+        try:
+            url = st.secrets.get("BACKEND_URL")
+        except Exception:
+            url = None
+        url = url or os.environ.get("BACKEND_URL", "")
+    secret = st.session_state.get("backend_secret") or os.environ.get("BACKEND_SECRET", "")
     try:
-        secret = st.secrets.get(env_name)
-        if secret:
-            return str(secret)
+        secret = secret or st.secrets.get("BACKEND_SECRET", "")
     except Exception:
         pass
-    return os.environ.get(env_name)
+    return (url or "").rstrip("/"), secret
 
 
-def key_input(env_name: str) -> None:
-    spec = KEY_SPECS[env_name]
-
-    def _remember() -> None:
-        typed = (st.session_state.get(spec["widget"]) or "").strip()
-        if typed:
-            st.session_state[spec["state"]] = typed
-
-    st.text_input(spec["label"], type="password", key=spec["widget"], on_change=_remember)
-    st.caption(spec["help"])
-    _remember()
-
-
-@st.cache_resource(show_spinner=False)
-def build_pipeline(groq_key: str, gemini_key: str) -> RAGPipeline:
-    return RAGPipeline(Embedder(api_key=gemini_key), VectorStore(), Generator(api_key=groq_key))
+def api(method: str, path: str, backend: str, secret: str, **kwargs) -> httpx.Response:
+    headers = kwargs.pop("headers", {})
+    if secret:
+        headers["Authorization"] = f"Bearer {secret}"
+    # Generous timeout: Render free tier can cold-start slowly.
+    return httpx.request(method, f"{backend}{path}", headers=headers, timeout=90, **kwargs)
 
 
 # --------------------------------------------------------------------------
-# Header + gate
+# Header
 # --------------------------------------------------------------------------
 
 st.markdown('<div class="brand">Delphi</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="tagline">A voice-first knowledge assistant. Vapi listens and speaks; a '
-    'retrieval-augmented backend keeps every answer grounded in your own documents. Manage the '
-    'knowledge base here, try it in text, then talk to it.</div>',
+    '<div class="tagline">A voice-first knowledge assistant. Vapi listens and speaks; a retrieval-augmented '
+    'backend keeps every answer grounded in your documents. This page manages that backend and lets you try it '
+    'in text before you talk to it.</div>',
     unsafe_allow_html=True,
 )
 st.markdown('<div class="rule"></div>', unsafe_allow_html=True)
 
-groq_key = resolve_key("GROQ_API_KEY")
-gemini_key = resolve_key("GEMINI_API_KEY")
+backend, secret = resolve_backend()
 
-if not groq_key or not gemini_key:
+if not backend:
     with st.sidebar:
-        st.markdown('<div class="label">API keys</div>', unsafe_allow_html=True)
-        for env_name in KEY_SPECS:
-            if not resolve_key(env_name):
-                key_input(env_name)
+        st.markdown('<div class="label">Backend</div>', unsafe_allow_html=True)
+        st.text_input("Backend URL", key="backend_url", placeholder="https://delphi-backend.onrender.com")
+        st.text_input("Backend secret (optional)", key="backend_secret", type="password")
     st.markdown(
-        '<div class="notebox">Add your Groq and Gemini API keys in the sidebar to begin.</div>',
+        '<div class="notebox">Enter the URL of your deployed backend in the sidebar to begin '
+        '(the Render service from <code>render.yaml</code>). Everything runs there; this page is just a client.</div>',
         unsafe_allow_html=True,
     )
     st.stop()
 
+# Confirm the backend is reachable.
 try:
-    pipeline = build_pipeline(groq_key, gemini_key)
-except (EmbeddingError, VectorStoreError) as exc:
-    st.error(str(exc))
+    health = api("GET", "/health", backend, secret).json()
+except Exception as exc:  # noqa: BLE001
+    st.error(f"Could not reach the backend at {backend}. It may be starting up (Render free tier cold start can take up to a minute). Details: {exc}")
     st.stop()
 
-st.session_state.setdefault("history", [])
-st.session_state.setdefault("uploader_round", 0)
+if not health.get("keys_configured"):
+    st.warning("The backend is reachable but its GROQ_API_KEY / GEMINI_API_KEY are not set. Add them in the Render dashboard.")
+
 
 # --------------------------------------------------------------------------
-# Sidebar: document manager
+# Sidebar: document manager (over HTTP)
 # --------------------------------------------------------------------------
+
+
+def load_docs() -> dict:
+    try:
+        return api("GET", "/documents", backend, secret).json().get("documents", {})
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+st.session_state.setdefault("uploader_round", 0)
+st.session_state.setdefault("history", [])
 
 with st.sidebar:
     st.markdown('<div class="brand" style="font-size:1.4rem;">Delphi</div>', unsafe_allow_html=True)
+    st.caption(f"Backend: {backend}")
     st.markdown('<div class="label" style="margin-top:0.9rem;">Add to knowledge base</div>', unsafe_allow_html=True)
 
     round_key = st.session_state["uploader_round"]
@@ -162,54 +151,56 @@ with st.sidebar:
         accept_multiple_files=True, key=f"uploader_{round_key}", label_visibility="collapsed",
     )
     if uploads:
-        existing = pipeline.sources()
+        existing = load_docs()
         for f in uploads:
             if f.name in existing:
                 continue
             try:
-                with st.spinner(f"Indexing {f.name}…"):
-                    report = pipeline.ingest(f.name, f.getvalue())
-                st.success(f"Added {f.name} ({report['chunks']} chunks)")
-            except (DocumentError, EmbeddingError) as exc:
+                with st.spinner(f"Uploading {f.name}…"):
+                    r = api("POST", "/documents", backend, secret, files={"file": (f.name, f.getvalue())})
+                if r.status_code == 200:
+                    st.success(f"Added {f.name} ({r.json().get('chunks', '?')} chunks)")
+                else:
+                    st.error(f"{f.name}: {r.json().get('detail', r.text)}")
+            except Exception as exc:  # noqa: BLE001
                 st.error(f"{f.name}: {exc}")
         st.session_state["uploader_round"] += 1
         st.rerun()
 
     st.markdown('<div class="rule"></div>', unsafe_allow_html=True)
-    sources = pipeline.sources()
-    st.markdown(f'<div class="label">Documents · {len(sources)} files · {pipeline.total_chunks()} chunks</div>', unsafe_allow_html=True)
-    if not sources:
+    docs = load_docs()
+    st.markdown(f'<div class="label">Documents · {len(docs)} files</div>', unsafe_allow_html=True)
+    if not docs:
         st.markdown('<div class="doc-row meta">Nothing indexed yet.</div>', unsafe_allow_html=True)
-    for name, count in sorted(sources.items()):
+    for name, count in sorted(docs.items()):
         col_a, col_b = st.columns([3, 1])
         with col_a:
             st.markdown(f'<div class="doc-row"><div class="name">{name}</div><div class="meta">{count} chunks</div></div>', unsafe_allow_html=True)
         with col_b:
             if st.button("Delete", key=f"del_{name}", use_container_width=True):
-                pipeline.delete(name)
+                api("DELETE", f"/documents/{name}", backend, secret)
                 st.rerun()
 
     st.markdown('<div class="rule"></div>', unsafe_allow_html=True)
-    st.markdown('<div class="doc-row meta">Built by Shuja Jamal · Voice Vapi · LLM Groq · Embeddings Gemini · Vector store Chroma</div>', unsafe_allow_html=True)
+    st.markdown('<div class="doc-row meta">Built by Shuja Jamal · Voice Vapi · Backend on Render · LLM Groq · Embeddings Gemini · Vector store Chroma</div>', unsafe_allow_html=True)
 
 # --------------------------------------------------------------------------
-# Tabs: Text chat + Voice
+# Tabs
 # --------------------------------------------------------------------------
 
 chat_tab, voice_tab = st.tabs(["Chat", "Voice"])
 
 with chat_tab:
-    if not pipeline.sources():
+    if not load_docs():
         st.markdown('<div class="notebox">Upload a document in the sidebar, then ask a question. Answers come only from what you add.</div>', unsafe_allow_html=True)
 
     for rec in st.session_state["history"]:
         with st.chat_message("user"):
-            st.markdown(rec["question"])
+            st.markdown(rec["q"])
         with st.chat_message("assistant"):
-            st.markdown(rec["answer"])
+            st.markdown(rec["a"])
             if rec.get("sources"):
-                srcs = ", ".join(sorted({h["source"] for h in rec["sources"]}))
-                st.markdown(f'<div class="metaline">Sources: {srcs}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="metaline">Sources: {", ".join(rec["sources"])}</div>', unsafe_allow_html=True)
 
     question = st.chat_input("Ask a question about your documents")
     if question:
@@ -217,31 +208,33 @@ with chat_tab:
             st.markdown(question)
         with st.chat_message("assistant"):
             try:
-                with st.spinner("Retrieving and answering…"):
-                    result = pipeline.answer(question, evaluate=False)
+                with st.spinner("Asking the backend…"):
+                    r = api("POST", "/chat/completions", backend, secret,
+                            json={"messages": [{"role": "user", "content": question}]})
+                data = r.json()
+                answer = data["choices"][0]["message"]["content"]
+                sources = data.get("sources", [])
             except Exception as exc:  # noqa: BLE001
-                st.error(str(exc))
+                st.error(f"Backend error: {exc}")
                 st.stop()
-            st.markdown(result["answer"])
-            if result["sources"]:
-                srcs = ", ".join(sorted({h["source"] for h in result["sources"]}))
-                st.markdown(f'<div class="metaline">Sources: {srcs}</div>', unsafe_allow_html=True)
-        st.session_state["history"].append(result)
+            st.markdown(answer)
+            if sources:
+                st.markdown(f'<div class="metaline">Sources: {", ".join(sources)}</div>', unsafe_allow_html=True)
+        st.session_state["history"].append({"q": question, "a": answer, "sources": sources})
         st.rerun()
 
 with voice_tab:
     st.markdown('<div class="label">Talk to Delphi</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="notebox">The voice loop runs through <b>Vapi</b>. Create an assistant in the Vapi '
-        'dashboard, set its model to <b>Custom LLM</b> pointing at this project\'s <code>/chat/completions</code> '
-        'endpoint (see the README), then paste your Vapi <b>public key</b> and <b>assistant ID</b> below to launch '
-        'the voice widget. The assistant will answer out loud from the documents in this knowledge base.</div>',
+        '<div class="notebox">The voice loop runs through <b>Vapi</b>. In the Vapi dashboard, create an assistant '
+        'whose model is <b>Custom LLM</b> pointing at <code>' + backend + '/chat/completions</code>, then paste your '
+        'Vapi <b>public key</b> and <b>assistant ID</b> below. Delphi will answer aloud from this same knowledge base.</div>',
         unsafe_allow_html=True,
     )
     st.write("")
-    col1, col2 = st.columns(2)
-    public_key = col1.text_input("Vapi public key", type="password")
-    assistant_id = col2.text_input("Vapi assistant ID")
+    c1, c2 = st.columns(2)
+    public_key = c1.text_input("Vapi public key", type="password")
+    assistant_id = c2.text_input("Vapi assistant ID")
 
     if public_key and assistant_id:
         widget = f"""
@@ -258,15 +251,13 @@ with voice_tab:
           const btn = document.getElementById("call");
           const status = document.getElementById("status");
           let live = false;
-          btn.onclick = () => {{
-            if (live) {{ vapi.stop(); }} else {{ vapi.start("{assistant_id}"); }}
-          }};
+          btn.onclick = () => {{ if (live) {{ vapi.stop(); }} else {{ vapi.start("{assistant_id}"); }} }};
           vapi.on("call-start", () => {{ live = true; btn.textContent = "End call"; status.textContent = "Connected, speak now."; }});
           vapi.on("call-end", () => {{ live = false; btn.textContent = "Start voice call"; status.textContent = "Call ended."; }});
           vapi.on("error", (e) => {{ status.textContent = "Error: " + (e?.message || e); }});
         </script>
         """
         components.html(widget, height=140)
-        st.caption("If the microphone does not activate inside this embed, open the Vapi widget on a standalone page (see README), since some browsers restrict mic access in iframes.")
+        st.caption("If the microphone does not activate inside this embed, open the widget on a standalone page (see README), since some browsers restrict mic access in iframes.")
     else:
-        st.markdown('<div class="doc-row meta">Enter your Vapi public key and assistant ID above to launch the voice widget.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="doc-row meta">Enter your Vapi public key and assistant ID to launch the voice widget.</div>', unsafe_allow_html=True)

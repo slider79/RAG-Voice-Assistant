@@ -40,9 +40,9 @@ sequenceDiagram
 | **Vapi** | Real-time voice: speech-to-text, text-to-speech, streaming, conversation flow |
 | **`server.py`** (FastAPI) | The OpenAI-compatible `/chat/completions` endpoint Vapi calls, plus document management |
 | **RAG pipeline** | Gemini embeddings → Chroma vector store → Groq generation, constrained to retrieved context |
-| **`app.py`** (Streamlit) | Companion UI: manage documents, try it in text, and launch the Vapi voice widget |
+| **`app.py`** (Streamlit) | Companion UI, a **thin client** of the backend: it manages documents, tries the RAG in text, and launches the Vapi voice widget, all over HTTP |
 
-The Streamlit app and the FastAPI backend **share the same Chroma store**, so a document you add in the UI is immediately answerable by voice.
+The backend is the single source of truth. The Streamlit UI holds no keys and runs no RAG of its own; it calls the backend's HTTP API. So a document added in the UI is the same one the voice agent answers from, whether the two are on the same machine or on different hosts.
 
 ---
 
@@ -60,43 +60,54 @@ Set `BACKEND_SECRET` to require a bearer token on `/chat/completions` (use the s
 
 ---
 
-## Setup
+## Keys you will need
 
-**1. Keys** (both free): `GROQ_API_KEY` from [console.groq.com/keys](https://console.groq.com/keys), `GEMINI_API_KEY` from [aistudio.google.com/apikey](https://aistudio.google.com/apikey). A **Vapi account** ([vapi.ai](https://vapi.ai)) for the voice layer.
-
-**2. Install and run locally:**
-
-```bash
-git clone https://github.com/<username>/<repo>.git
-cd <repo>
-
-python -m venv .venv
-.venv\Scripts\activate          # Windows
-# source .venv/bin/activate     # macOS or Linux
-pip install -r requirements.txt
-
-# put your keys in the environment (or .streamlit/secrets.toml for the UI)
-set GROQ_API_KEY=gsk_...         # Windows;  export ... on macOS/Linux
-set GEMINI_API_KEY=...
-
-# run the backend Vapi will call
-uvicorn server:app --port 8000
-
-# in a second terminal, run the companion UI
-streamlit run app.py
-```
-
-Add a document in the Streamlit sidebar and ask a question in the **Chat** tab to confirm RAG works in text before wiring up voice.
+All free: `GROQ_API_KEY` from [console.groq.com/keys](https://console.groq.com/keys), `GEMINI_API_KEY` from [aistudio.google.com/apikey](https://aistudio.google.com/apikey), and a **Vapi account** ([vapi.ai](https://vapi.ai)) for the voice layer.
 
 ---
 
-## Wiring up Vapi (the voice layer)
+## Deploy everything online (nothing runs on your machine)
 
-Vapi's servers call your backend, so the backend must be reachable from the internet.
+Three hosted pieces: the backend on Render, the companion UI on Streamlit Cloud, and Vapi for voice.
 
-1. **Expose the backend.** For local testing, tunnel it: `ngrok http 8000` gives you a public `https://…ngrok…` URL. For production, deploy the backend (Render, Railway, or Fly all run FastAPI well) and use its URL.
-2. **Create a Vapi assistant.** In the Vapi dashboard, set the assistant's model to **Custom LLM** with the URL `https://<your-backend>/chat/completions`. A ready-to-edit config is in [`vapi/assistant.json`](vapi/assistant.json). If you set `BACKEND_SECRET`, put the same value as the custom LLM's API key.
-3. **Talk to it.** Either use the test call in the Vapi dashboard, or open the **Voice** tab in the Streamlit app, paste your Vapi **public key** and **assistant ID**, and press *Start voice call*. Delphi will answer aloud from your documents.
+### 1. Backend → Render
+
+1. Push this repo to GitHub.
+2. On [render.com](https://render.com): **New + → Blueprint**, select the repo. Render reads [`render.yaml`](render.yaml) and creates the `delphi-backend` web service (build from `requirements-backend.txt`, start with uvicorn).
+3. When prompted, set the environment variables: `GROQ_API_KEY`, `GEMINI_API_KEY`, and optionally `BACKEND_SECRET` (a value you choose, to lock down the endpoint).
+4. Deploy. Your backend is now live at `https://delphi-backend-XXXX.onrender.com`. Check `…/health` in a browser.
+
+> **Render free-tier notes.** The service sleeps after ~15 minutes idle and cold-starts in roughly a minute, and its disk is ephemeral (uploaded documents reset on restart or redeploy). Both are fine for a demo: re-upload after a restart, and for a live voice demo hit `/health` once first to wake it. A paid instance (always-on + a persistent disk) removes both limits.
+
+### 2. Companion UI → Streamlit Cloud
+
+1. On [share.streamlit.io](https://share.streamlit.io): **Create app**, this repo, branch `main`, main file `app.py`. It installs only the light `requirements.txt` (Streamlit + an HTTP client).
+2. In **Advanced settings → Secrets**, point it at the backend:
+   ```toml
+   BACKEND_URL = "https://delphi-backend-XXXX.onrender.com"
+   # BACKEND_SECRET = "the-same-value-if-you-set-one"
+   ```
+3. Deploy. Upload a document in the sidebar and ask a question in the **Chat** tab to confirm the RAG works end to end, all in the browser.
+
+### 3. Voice → Vapi
+
+1. In the Vapi dashboard, create an assistant and set its model to **Custom LLM** with the URL `https://<your-render-url>/chat/completions`. A ready-to-edit config is in [`vapi/assistant.json`](vapi/assistant.json). If you set `BACKEND_SECRET`, use it as the custom LLM's API key.
+2. Talk to it: use Vapi's dashboard test call, or the **Voice** tab in the deployed Streamlit app (paste your Vapi public key and assistant ID). Delphi answers aloud from the same documents.
+
+### Running locally instead (optional)
+
+```bash
+pip install -r requirements-backend.txt          # backend deps
+set GROQ_API_KEY=gsk_...                          # export ... on macOS/Linux
+set GEMINI_API_KEY=...
+uvicorn server:app --port 8000                    # the backend
+
+pip install -r requirements.txt                   # UI deps (separate env is fine)
+set BACKEND_URL=http://localhost:8000
+streamlit run app.py                              # the companion UI
+```
+
+For voice against a local backend, expose it with `ngrok http 8000` and use that URL in Vapi.
 
 > Microphone access can be blocked inside embedded iframes on some browsers. If the widget's mic does not activate in Streamlit, run the voice widget on a standalone HTML page (the same snippet as the Voice tab) or use the Vapi dashboard's test call.
 
@@ -116,16 +127,18 @@ No keys needed. The RAG pipeline is faked, so the tests exercise the exact contr
 
 ```
 .
-├── server.py              FastAPI backend: /chat/completions (Vapi) + document endpoints
-├── app.py                 Streamlit companion: document manager, text chat, Vapi voice widget
-├── rag.py                 RAG orchestration (retrieve + stream)
-├── document_loader.py     Read PDF/TXT/DOCX and chunk
-├── embeddings.py          Gemini embeddings
-├── vector_store.py        Chroma: index, delete-by-source, similarity search
-├── llm.py                 Groq generation (streaming + non-streaming)
-├── vapi/assistant.json    Example Vapi assistant (custom-LLM) config
-├── requirements.txt
-├── .streamlit/            dark theme + secrets template
+├── server.py                  FastAPI backend: /chat/completions (Vapi) + document endpoints
+├── app.py                     Streamlit companion (thin HTTP client of the backend)
+├── rag.py                     RAG orchestration (retrieve + stream)
+├── document_loader.py         Read PDF/TXT/DOCX and chunk
+├── embeddings.py              Gemini embeddings
+├── vector_store.py            Chroma: index, delete-by-source, similarity search
+├── llm.py                     Groq generation (streaming + non-streaming)
+├── render.yaml                Render blueprint for the backend
+├── requirements-backend.txt   backend deps (Render)
+├── requirements.txt           UI deps (Streamlit Cloud): streamlit + httpx
+├── vapi/assistant.json        Example Vapi assistant (custom-LLM) config
+├── .streamlit/                dark theme + secrets template
 ├── tests/test_backend.py
 └── README.md
 ```
