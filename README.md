@@ -11,7 +11,7 @@ Delphi is a voice assistant that answers out loud from *your* documents. [Vapi](
 ![Embeddings](https://img.shields.io/badge/embeddings-Gemini-1b7a43)
 ![Vector%20DB](https://img.shields.io/badge/vector_db-Qdrant-dc244c)
 
-**Live app:** _add your Vercel URL here after deploying_ · the deployed backend also serves a built-in web UI at `/`.
+**Live app:** https://rag-voice-assistant-theta.vercel.app.
 
 ---
 
