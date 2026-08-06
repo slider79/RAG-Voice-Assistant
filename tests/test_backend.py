@@ -152,10 +152,22 @@ def test_vector_store_qdrant():
 
 
 def test_index_html():
-    print("\nGET / serves the built-in web UI")
+    print("\nGET / serves the built-in web UI with the voice orb")
     r = client().get("/")
     check(r.status_code == 200 and "Delphi" in r.text, "returns the HTML page")
     check("/chat/completions" in r.text, "page references the Vapi endpoint")
+    check('id="orb"' in r.text, "includes the voice orb")
+    check("@vapi-ai/web" in r.text, "loads the Vapi web SDK")
+    check("speech-start" in r.text and "volume-level" in r.text, "listens for both speakers' events")
+    check("favicon.svg" in r.text, "links the favicon")
+
+
+def test_favicon():
+    print("\nGET /favicon.svg serves the orb icon")
+    r = client().get("/favicon.svg")
+    check(r.status_code == 200, "responds 200")
+    check("image/svg+xml" in r.headers.get("content-type", ""), "served as SVG")
+    check("<svg" in r.text and "radialGradient" in r.text, "is a gradient orb")
 
 
 def test_bearer_secret_guard():
@@ -177,6 +189,7 @@ if __name__ == "__main__":
         test_documents_crud,
         test_vector_store_qdrant,
         test_index_html,
+        test_favicon,
         test_bearer_secret_guard,
     ):
         test()

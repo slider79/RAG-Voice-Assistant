@@ -11,7 +11,7 @@ Delphi is a voice assistant that answers out loud from *your* documents. [Vapi](
 ![Embeddings](https://img.shields.io/badge/embeddings-Gemini-1b7a43)
 ![Vector%20DB](https://img.shields.io/badge/vector_db-Qdrant-dc244c)
 
-**Live app:** https://rag-voice-assistant-theta.vercel.app.
+**Live app:** [rag-voice-assistant-theta.vercel.app](https://rag-voice-assistant-theta.vercel.app) · the deploy serves a built-in web UI with an animated voice orb.
 
 ---
 
@@ -92,9 +92,32 @@ At [cloud.qdrant.io](https://cloud.qdrant.io), create a free cluster and copy it
    ```
 4. Deploy. Open the Vercel URL: the backend serves a **built-in web UI** where you can upload documents and chat. That is the whole app, online.
 
-### 3. Point Vapi at it
+### 3. Point Vapi at it (step by step)
 
-In the Vapi dashboard, create an assistant with model **Custom LLM** and URL `https://<your-vercel-url>/chat/completions` (template in [`vapi/assistant.json`](vapi/assistant.json)). If you set `BACKEND_SECRET`, use it as the custom LLM's API key. Then use Vapi's dashboard test call, or embed the Vapi web widget, to talk to it. Delphi answers aloud from the documents you uploaded.
+1. **Sign up** at [vapi.ai](https://vapi.ai) and open the dashboard.
+2. **Create an assistant.** *Assistants → Create Assistant*, start from a blank template and name it `Delphi`.
+3. **Set the model to your backend.** In the assistant's **Model** section choose provider **Custom LLM**, then set:
+   - **URL:** `https://rag-voice-assistant-theta.vercel.app/chat/completions`
+   - **API key:** only if you set `BACKEND_SECRET`; use the same value.
+   - A ready-made config is in [`vapi/assistant.json`](vapi/assistant.json).
+4. **Pick a voice and transcriber.** Any provider works; the defaults are fine to start.
+5. **Set the first message**, for example *"Hi, I'm Delphi. Ask me anything about your documents."*
+6. **Save**, then hit **Talk to Assistant** in the dashboard for an instant test call.
+7. **Or use the orb.** Open the deployed site, go to the **Voice** tab, paste your Vapi **public key** (*Vapi dashboard → API Keys → Public Key*) and the **assistant ID** (shown on the assistant page), then tap the orb.
+
+Upload at least one document first, otherwise Delphi will correctly tell you it has nothing to answer from.
+
+### The voice orb
+
+The Voice tab is built around a large animated orb that reflects who is talking, using the Vapi web SDK's live events:
+
+| State | Look |
+| :--- | :--- |
+| **Idle** | A dim sphere breathing slowly. Tap it to start a call. |
+| **You speaking** | Glows **cyan** and pulses in time with your mic level, with expanding rings (driven by Vapi's `volume-level`). |
+| **Delphi speaking** | Glows **violet** and pulses faster (driven by `speech-start` / `speech-end`). |
+
+Tap the orb again to end the call. The page is styled in a retro-modern pairing of **Space Grotesk** for display text and **JetBrains Mono** for labels, and serves its own glowing-orb SVG favicon at `/favicon.svg`.
 
 ### Running locally instead (optional)
 
