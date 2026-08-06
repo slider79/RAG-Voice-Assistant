@@ -21,7 +21,7 @@ import uuid
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 
 from document_loader import DocumentError
 from embeddings import Embedder, EmbeddingError
@@ -62,6 +62,96 @@ def require_secret(authorization: str | None = Header(default=None)) -> None:
     token = (authorization or "").removeprefix("Bearer ").strip()
     if token != BACKEND_SECRET:
         raise HTTPException(status_code=401, detail="Invalid or missing API key.")
+
+
+# --------------------------------------------------------------------------
+# Built-in web UI (so the deploy is a complete app, not just an API)
+# --------------------------------------------------------------------------
+
+INDEX_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Delphi</title>
+<style>
+:root{--bg:#191919;--panel:#202020;--ink:#e6e6e4;--muted:#979692;--line:#333230;}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);
+font-family:ui-sans-serif,-apple-system,"Segoe UI",Inter,Arial,sans-serif;line-height:1.5}
+.wrap{max-width:980px;margin:0 auto;padding:36px 20px 80px}
+.brand{font-size:2.3rem;font-weight:700;letter-spacing:-.02em}
+.tagline{color:var(--muted);font-size:.95rem;margin:.4rem 0 0;max-width:64ch}
+.rule{border-bottom:1px solid var(--line);margin:18px 0}
+.label{font-size:.7rem;text-transform:uppercase;letter-spacing:.13em;color:var(--muted);font-weight:600;margin:0 0 8px}
+.grid{display:grid;grid-template-columns:340px 1fr;gap:22px}
+@media(max-width:760px){.grid{grid-template-columns:1fr}}
+.box{border:1px solid var(--line);background:var(--panel);padding:8px 11px;margin-bottom:7px;font-size:.85rem}
+.box .meta{color:var(--muted);font-size:.78rem}
+button{border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:8px 14px;
+cursor:pointer;font-family:inherit;font-size:.85rem}button:hover{border-color:var(--muted);background:#262625}
+input[type=text]{width:100%;border:1px solid var(--line);background:var(--panel);color:var(--ink);
+padding:10px 12px;font-family:inherit;font-size:.9rem}
+input[type=file]{color:var(--muted);font-size:.8rem;width:100%;margin-bottom:8px}
+.msg{border:1px solid #2a2a29;background:var(--panel);padding:9px 12px;margin-bottom:8px;font-size:.92rem}
+.msg.u{border-left:2px solid var(--muted)}.msg .who{color:var(--muted);font-size:.7rem;text-transform:uppercase;letter-spacing:.1em;margin-bottom:3px}
+.src{color:var(--muted);font-size:.75rem;margin-top:4px}
+.note{border:1px solid var(--line);background:var(--panel);padding:12px 14px;color:var(--muted);font-size:.83rem;margin-top:16px}
+code{background:#161616;padding:2px 6px;border:1px solid var(--line);font-size:.82rem;word-break:break-all}
+.row{display:flex;gap:8px;margin-top:8px}.del{padding:4px 9px;font-size:.75rem}
+</style></head><body><div class="wrap">
+<div class="brand">Delphi</div>
+<div class="tagline">A voice-first knowledge assistant. Vapi speaks; this backend keeps answers grounded in your documents. Manage the knowledge base and try it in text below.</div>
+<div class="rule"></div>
+<div class="grid">
+  <div>
+    <div class="label">Add to knowledge base</div>
+    <input type="file" id="file" accept=".pdf,.txt,.md,.docx" multiple>
+    <button onclick="upload()">Upload</button>
+    <div id="upstatus" class="meta" style="margin-top:8px"></div>
+    <div class="label" style="margin-top:20px">Documents</div>
+    <div id="docs"></div>
+  </div>
+  <div>
+    <div class="label">Ask (text)</div>
+    <div id="chat"></div>
+    <div class="row"><input type="text" id="q" placeholder="Ask a question about your documents" onkeydown="if(event.key==='Enter')ask()">
+    <button onclick="ask()">Send</button></div>
+    <input type="text" id="secret" placeholder="Backend secret (only if you set one)" style="margin-top:8px;font-size:.8rem">
+  </div>
+</div>
+<div class="note">Voice: create a Vapi assistant with model <b>Custom LLM</b> pointing at
+<code id="ep"></code>, then call it from the Vapi dashboard or embed the Vapi widget.</div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+$("ep").textContent=location.origin+"/chat/completions";
+function hdr(){const s=$("secret").value.trim();return s?{"Authorization":"Bearer "+s}:{};}
+async function loadDocs(){const r=await fetch("/documents");const d=(await r.json()).documents||{};
+ $("docs").innerHTML=Object.keys(d).length?"":'<div class="box meta">Nothing indexed yet.</div>';
+ for(const[n,c]of Object.entries(d)){const el=document.createElement("div");el.className="box";
+ el.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center">
+ <span>${n}<br><span class="meta">${c} chunks</span></span>
+ <button class="del" onclick="del('${n.replace(/'/g,"\\'")}')">Delete</button></div>`;$("docs").appendChild(el);}}
+async function upload(){const f=$("file").files;if(!f.length)return;$("upstatus").textContent="Uploading…";
+ for(const file of f){const fd=new FormData();fd.append("file",file);
+ const r=await fetch("/documents",{method:"POST",body:fd});
+ const j=await r.json();$("upstatus").textContent=r.ok?`Added ${file.name} (${j.chunks} chunks)`:("Error: "+(j.detail||r.status));}
+ $("file").value="";loadDocs();}
+async function del(n){await fetch("/documents/"+encodeURIComponent(n),{method:"DELETE"});loadDocs();}
+function add(who,text,src){const el=document.createElement("div");el.className="msg "+(who=="You"?"u":"");
+ el.innerHTML=`<div class="who">${who}</div>${text}`+(src&&src.length?`<div class="src">Sources: ${src.join(", ")}</div>`:"");
+ $("chat").appendChild(el);el.scrollIntoView();}
+async function ask(){const q=$("q").value.trim();if(!q)return;$("q").value="";add("You",q);
+ add("Delphi","…");const last=$("chat").lastChild;
+ try{const r=await fetch("/chat/completions",{method:"POST",headers:{"Content-Type":"application/json",...hdr()},
+ body:JSON.stringify({messages:[{role:"user",content:q}]})});const j=await r.json();
+ if(!r.ok){last.innerHTML='<div class="who">Delphi</div>Error: '+(j.detail||r.status);return;}
+ last.innerHTML=`<div class="who">Delphi</div>${j.choices[0].message.content}`+
+ (j.sources&&j.sources.length?`<div class="src">Sources: ${j.sources.join(", ")}</div>`:"");}
+ catch(e){last.innerHTML='<div class="who">Delphi</div>Error: '+e;}}
+loadDocs();
+</script></body></html>"""
+
+
+@app.get("/", response_class=HTMLResponse)
+def index() -> str:
+    return INDEX_HTML
 
 
 # --------------------------------------------------------------------------

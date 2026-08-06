@@ -6,12 +6,12 @@ Delphi is a voice assistant that answers out loud from *your* documents. [Vapi](
 
 ![Voice](https://img.shields.io/badge/voice-Vapi-000000)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-009688)
+![Deploy](https://img.shields.io/badge/deploy-Vercel-000000)
 ![LLM](https://img.shields.io/badge/llm-Groq-f55036)
 ![Embeddings](https://img.shields.io/badge/embeddings-Gemini-1b7a43)
-![Vector%20DB](https://img.shields.io/badge/vector_db-Chroma-4f46e5)
-![UI](https://img.shields.io/badge/ui-Streamlit-ff4b4b)
+![Vector%20DB](https://img.shields.io/badge/vector_db-Qdrant-dc244c)
 
-**Companion app:** _add your Streamlit Cloud URL here after deploying_
+**Live app:** _add your Vercel URL here after deploying_ · the deployed backend also serves a built-in web UI at `/`.
 
 ---
 
@@ -24,7 +24,7 @@ sequenceDiagram
     participant U as User (speaking)
     participant V as Vapi (STT + TTS)
     participant B as FastAPI backend (this repo)
-    participant R as RAG (Chroma + Gemini + Groq)
+    participant R as RAG (Qdrant + Gemini + Groq)
     U->>V: speaks a question
     V->>B: POST /chat/completions (OpenAI-compatible)
     B->>R: embed query, retrieve top-k chunks
@@ -38,11 +38,11 @@ sequenceDiagram
 | Piece | Role |
 | :--- | :--- |
 | **Vapi** | Real-time voice: speech-to-text, text-to-speech, streaming, conversation flow |
-| **`server.py`** (FastAPI) | The OpenAI-compatible `/chat/completions` endpoint Vapi calls, plus document management |
-| **RAG pipeline** | Gemini embeddings → Chroma vector store → Groq generation, constrained to retrieved context |
-| **`app.py`** (Streamlit) | Companion UI, a **thin client** of the backend: it manages documents, tries the RAG in text, and launches the Vapi voice widget, all over HTTP |
+| **`server.py`** (FastAPI) | The OpenAI-compatible `/chat/completions` endpoint Vapi calls, document management, **and a built-in web UI** at `/` |
+| **RAG pipeline** | Gemini embeddings → Qdrant vector store → Groq generation, constrained to retrieved context |
+| **`app.py`** (Streamlit) | Optional standalone companion (thin HTTP client). The backend already ships its own web UI, so this is only for those who prefer Streamlit |
 
-The backend is the single source of truth. The Streamlit UI holds no keys and runs no RAG of its own; it calls the backend's HTTP API. So a document added in the UI is the same one the voice agent answers from, whether the two are on the same machine or on different hosts.
+The backend is the single source of truth: it holds the keys, the documents, the RAG, and the voice endpoint. Deploying it is all you need; it serves a web page to manage documents and chat, and Vapi calls the same endpoint for voice.
 
 ---
 
@@ -62,54 +62,51 @@ Set `BACKEND_SECRET` to require a bearer token on `/chat/completions` (use the s
 
 ## Keys you will need
 
-All free: `GROQ_API_KEY` from [console.groq.com/keys](https://console.groq.com/keys), `GEMINI_API_KEY` from [aistudio.google.com/apikey](https://aistudio.google.com/apikey), and a **Vapi account** ([vapi.ai](https://vapi.ai)) for the voice layer.
+All free, no credit card:
+
+| Key | From | For |
+| :--- | :--- | :--- |
+| `GROQ_API_KEY` | [console.groq.com/keys](https://console.groq.com/keys) | answer generation |
+| `GEMINI_API_KEY` | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | embeddings |
+| `QDRANT_URL` + `QDRANT_API_KEY` | [cloud.qdrant.io](https://cloud.qdrant.io) (free 1 GB cluster) | the vector store |
+| Vapi account | [vapi.ai](https://vapi.ai) | the voice layer |
 
 ---
 
-## Deploy everything online (nothing runs on your machine)
+## Deploy on Vercel (fully online, nothing on your machine)
 
-Three hosted pieces: the backend on Render, the companion UI on Streamlit Cloud, and Vapi for voice.
+The backend is a serverless FastAPI app. Serverless instances are stateless, which is exactly why the vector store is **Qdrant** (a network database) rather than a local file: every request, on whatever instance, sees the same knowledge base.
 
-### 1. Backend → Render
+### 1. Create a Qdrant Cloud cluster
+
+At [cloud.qdrant.io](https://cloud.qdrant.io), create a free cluster and copy its **URL** and an **API key**. Nothing else to configure; the app creates the collection on first use.
+
+### 2. Deploy the backend to Vercel
 
 1. Push this repo to GitHub.
-2. On [render.com](https://render.com): **New + → Blueprint**, select the repo. Render reads [`render.yaml`](render.yaml) and creates the `delphi-backend` web service (build from `requirements-backend.txt`, start with uvicorn).
-3. When prompted, set the environment variables: `GROQ_API_KEY`, `GEMINI_API_KEY`, and optionally `BACKEND_SECRET` (a value you choose, to lock down the endpoint).
-4. Deploy. Your backend is now live at `https://delphi-backend-XXXX.onrender.com`. Check `…/health` in a browser.
-
-> **Render free-tier notes.** The service sleeps after ~15 minutes idle and cold-starts in roughly a minute, and its disk is ephemeral (uploaded documents reset on restart or redeploy). Both are fine for a demo: re-upload after a restart, and for a live voice demo hit `/health` once first to wake it. A paid instance (always-on + a persistent disk) removes both limits.
-
-### 2. Companion UI → Streamlit Cloud
-
-1. On [share.streamlit.io](https://share.streamlit.io): **Create app**, this repo, branch `main`, main file `app.py`. It installs only the light `requirements.txt` (Streamlit + an HTTP client).
-2. In **Advanced settings → Secrets**, point it at the backend:
-   ```toml
-   BACKEND_URL = "https://delphi-backend-XXXX.onrender.com"
-   # BACKEND_SECRET = "the-same-value-if-you-set-one"
+2. At [vercel.com/new](https://vercel.com/new), import the repo. Vercel reads [`pyproject.toml`](pyproject.toml) and runs the FastAPI app (`server:app`) as a Python function.
+3. Under **Environment Variables**, add:
    ```
-3. Deploy. Upload a document in the sidebar and ask a question in the **Chat** tab to confirm the RAG works end to end, all in the browser.
+   GROQ_API_KEY, GEMINI_API_KEY, QDRANT_URL, QDRANT_API_KEY
+   BACKEND_SECRET   (optional: a value you choose, to lock the Vapi endpoint)
+   ```
+4. Deploy. Open the Vercel URL: the backend serves a **built-in web UI** where you can upload documents and chat. That is the whole app, online.
 
-### 3. Voice → Vapi
+### 3. Point Vapi at it
 
-1. In the Vapi dashboard, create an assistant and set its model to **Custom LLM** with the URL `https://<your-render-url>/chat/completions`. A ready-to-edit config is in [`vapi/assistant.json`](vapi/assistant.json). If you set `BACKEND_SECRET`, use it as the custom LLM's API key.
-2. Talk to it: use Vapi's dashboard test call, or the **Voice** tab in the deployed Streamlit app (paste your Vapi public key and assistant ID). Delphi answers aloud from the same documents.
+In the Vapi dashboard, create an assistant with model **Custom LLM** and URL `https://<your-vercel-url>/chat/completions` (template in [`vapi/assistant.json`](vapi/assistant.json)). If you set `BACKEND_SECRET`, use it as the custom LLM's API key. Then use Vapi's dashboard test call, or embed the Vapi web widget, to talk to it. Delphi answers aloud from the documents you uploaded.
 
 ### Running locally instead (optional)
 
 ```bash
-pip install -r requirements-backend.txt          # backend deps
-set GROQ_API_KEY=gsk_...                          # export ... on macOS/Linux
+pip install -r requirements.txt
+set GROQ_API_KEY=gsk_...        # export ... on macOS/Linux
 set GEMINI_API_KEY=...
-uvicorn server:app --port 8000                    # the backend
-
-pip install -r requirements.txt                   # UI deps (separate env is fine)
-set BACKEND_URL=http://localhost:8000
-streamlit run app.py                              # the companion UI
+# QDRANT_URL/QDRANT_API_KEY optional locally: without them it uses an in-memory store
+uvicorn server:app --port 8000
 ```
 
-For voice against a local backend, expose it with `ngrok http 8000` and use that URL in Vapi.
-
-> Microphone access can be blocked inside embedded iframes on some browsers. If the widget's mic does not activate in Streamlit, run the voice widget on a standalone HTML page (the same snippet as the Voice tab) or use the Vapi dashboard's test call.
+Open `http://localhost:8000` for the web UI. For voice against a local backend, tunnel it with `ngrok http 8000` and use that URL in Vapi. A standalone Streamlit client (`app.py`, deps in `requirements-ui.txt`) is also included if you prefer it over the built-in UI.
 
 ---
 
@@ -127,18 +124,18 @@ No keys needed. The RAG pipeline is faked, so the tests exercise the exact contr
 
 ```
 .
-├── server.py                  FastAPI backend: /chat/completions (Vapi) + document endpoints
-├── app.py                     Streamlit companion (thin HTTP client of the backend)
+├── server.py                  FastAPI backend: /chat/completions (Vapi), document endpoints, built-in web UI
 ├── rag.py                     RAG orchestration (retrieve + stream)
 ├── document_loader.py         Read PDF/TXT/DOCX and chunk
 ├── embeddings.py              Gemini embeddings
-├── vector_store.py            Chroma: index, delete-by-source, similarity search
+├── vector_store.py            Qdrant: index, delete-by-source, similarity search
 ├── llm.py                     Groq generation (streaming + non-streaming)
-├── render.yaml                Render blueprint for the backend
-├── requirements-backend.txt   backend deps (Render)
-├── requirements.txt           UI deps (Streamlit Cloud): streamlit + httpx
-├── vapi/assistant.json        Example Vapi assistant (custom-LLM) config
-├── .streamlit/                dark theme + secrets template
+├── pyproject.toml             Vercel entrypoint (server:app) + backend deps
+├── vercel.json                Vercel function config (maxDuration)
+├── requirements.txt           backend deps (also used locally)
+├── app.py                     optional standalone Streamlit client
+├── requirements-ui.txt        deps for the optional Streamlit client
+├── vapi/assistant.json        example Vapi assistant (custom-LLM) config
 ├── tests/test_backend.py
 └── README.md
 ```
@@ -146,6 +143,8 @@ No keys needed. The RAG pipeline is faked, so the tests exercise the exact contr
 ---
 
 ## Design and safety notes
+
+**Why Qdrant instead of Chroma here?** The earlier version of this project used Chroma with a local file, which is perfect on a normal server. Vercel is serverless: functions are stateless and share no disk, so a document written to disk in one request would be gone when the next request lands on a different instance. Qdrant is a network database, so all instances read and write the same store. It also keeps the function small, well under Vercel's size limit, which a bundled Chroma would strain.
 
 **Why Custom LLM instead of Vapi tools?** Making the whole backend Vapi's LLM keeps every turn grounded: Vapi never answers from its own model, so it cannot bypass the documents. The endpoint is plain OpenAI-compatible, so it also works with anything else that speaks that protocol.
 

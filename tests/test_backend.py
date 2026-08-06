@@ -126,6 +126,38 @@ def test_documents_crud():
     check("guide.pdf" not in c.get("/documents").json()["documents"], "deleted file is gone")
 
 
+def test_vector_store_qdrant():
+    print("\nVectorStore (in-memory Qdrant) indexes, retrieves, and deletes by source")
+    from vector_store import VECTOR_DIM, VectorStore
+
+    def vec(i):  # a 768-dim one-hot vector so cosine search is unambiguous
+        v = [0.0] * VECTOR_DIM
+        v[i] = 1.0
+        return v
+
+    vs = VectorStore()  # no QDRANT_URL -> in-memory
+    vs.add_document("A.txt", ["about cats"], [vec(0)])
+    vs.add_document("B.txt", ["about boats"], [vec(1)])
+    check(vs.chunk_count() == 2, "two chunks indexed")
+    check(set(vs.list_documents()) == {"A.txt", "B.txt"}, "lists both documents")
+
+    hits = vs.query(vec(0), k=1)
+    check(hits and hits[0]["source"] == "A.txt", "retrieves the nearest document")
+    check(0.0 <= hits[0]["score"] <= 1.0, "score is a similarity in [0,1]")
+
+    vs.delete_document("A.txt")
+    check(vs.chunk_count() == 1, "delete removes the document's vectors")
+    check("A.txt" not in vs.list_documents(), "deleted document leaves the list")
+    check(vs.query(vec(0), k=1)[0]["source"] == "B.txt", "deleted content is no longer retrievable")
+
+
+def test_index_html():
+    print("\nGET / serves the built-in web UI")
+    r = client().get("/")
+    check(r.status_code == 200 and "Delphi" in r.text, "returns the HTML page")
+    check("/chat/completions" in r.text, "page references the Vapi endpoint")
+
+
 def test_bearer_secret_guard():
     print("\nBearer secret guards /chat/completions when configured")
     c = client(secret="sekret")
@@ -143,6 +175,8 @@ if __name__ == "__main__":
         test_chat_completions_stream,
         test_chat_completions_needs_user_message,
         test_documents_crud,
+        test_vector_store_qdrant,
+        test_index_html,
         test_bearer_secret_guard,
     ):
         test()

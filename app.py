@@ -182,7 +182,7 @@ with st.sidebar:
                 st.rerun()
 
     st.markdown('<div class="rule"></div>', unsafe_allow_html=True)
-    st.markdown('<div class="doc-row meta">Built by Shuja Jamal · Voice Vapi · Backend on Render · LLM Groq · Embeddings Gemini · Vector store Chroma</div>', unsafe_allow_html=True)
+    st.markdown('<div class="doc-row meta">Built by Shuja Jamal · Voice Vapi · Backend on Vercel · LLM Groq · Embeddings Gemini · Vector store Qdrant</div>', unsafe_allow_html=True)
 
 # --------------------------------------------------------------------------
 # Tabs

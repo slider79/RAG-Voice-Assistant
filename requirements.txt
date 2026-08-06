@@ -1,4 +1,9 @@
-# Companion UI (Streamlit Cloud). The UI is a thin client of the backend, so it
-# only needs Streamlit and an HTTP client, not the heavy RAG stack.
-streamlit>=1.40
-httpx>=0.27
+# Backend dependencies (used by Vercel and for local runs).
+fastapi>=0.110
+uvicorn[standard]>=0.27
+python-multipart>=0.0.9
+groq>=0.13
+google-genai>=0.3
+qdrant-client>=1.7
+pypdf>=4.0
+python-docx>=1.1

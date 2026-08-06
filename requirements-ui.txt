@@ -1,0 +1,5 @@
+# Optional: dependencies for the standalone Streamlit companion (app.py).
+# The backend already ships a built-in web UI, so this is only needed if you
+# prefer running the Streamlit client separately.
+streamlit>=1.40
+httpx>=0.27
