@@ -146,6 +146,21 @@ Open `http://localhost:8000` for the web UI. For voice against a local backend, 
 
 ---
 
+## Troubleshooting
+
+**Upload seems to hang, or a document never appears.** Open `/health` first, it tells you most of what you need:
+
+| `/health` shows | Meaning |
+| :--- | :--- |
+| `"vector_store": "in-memory"` plus a warning | `QDRANT_URL` is not set in Vercel. On serverless each request gets a fresh empty store, so uploads vanish immediately. Add the Qdrant variables and redeploy. |
+| `"keys_configured": false` | `GROQ_API_KEY` or `GEMINI_API_KEY` is missing. |
+
+**"Gemini rate limit reached".** The Gemini free tier limits requests per minute, and a large document means several embedding calls. Embedding retries automatically with backoff, but a sustained limit surfaces this message. Wait a minute, or upload a smaller file.
+
+**Large documents.** Serverless functions cap out at 60 seconds here. A very large PDF may exceed that while embedding; split it, or run the backend somewhere without a request timeout.
+
+---
+
 ## Tests
 
 ```bash

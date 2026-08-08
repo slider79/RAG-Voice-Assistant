@@ -241,11 +241,28 @@ window.loadDocs=async function(){const r=await fetch("/documents");const d=(awai
  const b=document.createElement("button");b.className="del";b.textContent="Delete";
  b.onclick=()=>del(n);el.firstElementChild.appendChild(b);$("docs").appendChild(el);}};
 
-window.upload=async function(){const f=$("file").files;if(!f.length)return;$("upstatus").textContent="Uploading...";
- for(const file of f){const fd=new FormData();fd.append("file",file);
- const r=await fetch("/documents",{method:"POST",body:fd});const j=await r.json();
- $("upstatus").textContent=r.ok?`Added ${file.name} (${j.chunks} chunks)`:("Error: "+(j.detail||r.status));}
- $("file").value="";loadDocs();};
+window.upload=async function(){const f=[...$("file").files];if(!f.length)return;
+ const btn=document.querySelector('#p-docs button');if(btn)btn.disabled=true;
+ for(let i=0;i<f.length;i++){const file=f[i];
+  $("upstatus").textContent=`Indexing ${file.name} (${i+1} of ${f.length})... this can take a moment for large files.`;
+  const fd=new FormData();fd.append("file",file);
+  /* Abort rather than hang: a serverless timeout returns no usable body, and
+     without this the status would sit on "Indexing..." forever. */
+  const ctl=new AbortController();const timer=setTimeout(()=>ctl.abort(),120000);
+  try{
+   const r=await fetch("/documents",{method:"POST",body:fd,signal:ctl.signal});
+   let j={};try{j=await r.json();}catch(_){/* error pages are not JSON */}
+   if(r.ok){$("upstatus").textContent=`Added ${file.name} (${j.chunks} chunks)`;}
+   else{$("upstatus").textContent="Error: "+(j.detail||`server returned ${r.status}`);break;}
+  }catch(e){
+   $("upstatus").textContent=e.name==="AbortError"
+     ? `Timed out indexing ${file.name}. Try a smaller file.`
+     : "Upload failed: "+(e.message||e);
+   break;
+  }finally{clearTimeout(timer);}
+  await loadDocs();
+ }
+ if(btn)btn.disabled=false;$("file").value="";loadDocs();};
 
 window.del=async function(n){await fetch("/documents/"+encodeURIComponent(n),{method:"DELETE"});loadDocs();};
 
@@ -355,13 +372,26 @@ def favicon() -> Response:
 @app.get("/health")
 def health() -> dict:
     have_keys = bool(os.environ.get("GROQ_API_KEY") and os.environ.get("GEMINI_API_KEY"))
+    persistent = bool(os.environ.get("QDRANT_URL"))
     docs = {}
     if have_keys:
         try:
             docs = get_pipeline().sources()
         except Exception:  # noqa: BLE001
             docs = {}
-    return {"status": "ok", "keys_configured": have_keys, "documents": len(docs)}
+    payload = {
+        "status": "ok",
+        "keys_configured": have_keys,
+        "vector_store": "qdrant" if persistent else "in-memory",
+        "documents": len(docs),
+    }
+    if not persistent:
+        # On serverless this is the usual cause of "my upload disappeared".
+        payload["warning"] = (
+            "QDRANT_URL is not set, so documents are stored in memory and will not "
+            "survive between requests on serverless hosting."
+        )
+    return payload
 
 
 # --------------------------------------------------------------------------

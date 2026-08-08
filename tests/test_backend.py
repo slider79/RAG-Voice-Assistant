@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -162,6 +163,68 @@ def test_index_html():
     check("favicon.svg" in r.text, "links the favicon")
 
 
+def test_health_warns_without_qdrant():
+    print("\nGET /health flags an in-memory store (the 'uploads vanish' trap)")
+    import os
+
+    saved = os.environ.pop("QDRANT_URL", None)
+    try:
+        body = client().get("/health").json()
+        check(body["vector_store"] == "in-memory", "reports the in-memory store")
+        check("warning" in body, "warns that uploads will not persist")
+        os.environ["QDRANT_URL"] = "https://example.qdrant.io"
+        body = client().get("/health").json()
+        check(body["vector_store"] == "qdrant", "reports qdrant when configured")
+        check("warning" not in body, "no warning once configured")
+    finally:
+        if saved is None:
+            os.environ.pop("QDRANT_URL", None)
+        else:
+            os.environ["QDRANT_URL"] = saved
+
+
+def test_embedder_retries_rate_limit():
+    print("\nEmbedder retries a 429 instead of failing the whole upload")
+    from embeddings import Embedder, EmbeddingError
+
+    class Boom(Exception):
+        def __init__(self, code):
+            self.code = code
+            super().__init__(f"{code}")
+
+    class Flaky:
+        def __init__(self, fails, code=429):
+            self.calls = 0
+            self.fails = fails
+            self.code = code
+
+        def embed_content(self, model, contents, config=None):
+            self.calls += 1
+            if self.calls <= self.fails:
+                raise Boom(self.code)
+            return SimpleNamespace(embeddings=[SimpleNamespace(values=[1.0, 0.0]) for _ in contents])
+
+    import time as _t
+
+    original = _t.sleep
+    _t.sleep = lambda *_: None  # do not actually wait during tests
+    try:
+        models = Flaky(fails=2)
+        emb = Embedder(client=SimpleNamespace(models=models))
+        out = emb.embed_documents(["a", "b"])
+        check(len(out) == 2 and models.calls == 3, "retried twice, then succeeded")
+
+        # A persistent 429 gives a clear, actionable message rather than a raw dump.
+        emb2 = Embedder(client=SimpleNamespace(models=Flaky(fails=99)))
+        try:
+            emb2.embed_documents(["a"])
+            check(False, "should raise after exhausting retries")
+        except EmbeddingError as exc:
+            check("rate limit" in str(exc).lower(), "explains the rate limit in plain words")
+    finally:
+        _t.sleep = original
+
+
 def test_vapi_credentials_injection():
     print("\nGET / injects Vapi credentials when they are configured")
     import os
@@ -221,6 +284,8 @@ if __name__ == "__main__":
         test_documents_crud,
         test_vector_store_qdrant,
         test_index_html,
+        test_health_warns_without_qdrant,
+        test_embedder_retries_rate_limit,
         test_vapi_credentials_injection,
         test_favicon,
         test_bearer_secret_guard,
