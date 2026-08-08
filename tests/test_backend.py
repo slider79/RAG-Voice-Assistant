@@ -76,9 +76,26 @@ def test_last_user_message():
 
 
 def test_health():
-    print("\nGET /health reports status")
-    r = client().get("/health")
-    check(r.status_code == 200 and r.json()["status"] == "ok", "health returns ok")
+    print("\nGET /health reports status, and says why when degraded")
+    import os
+
+    saved = {k: os.environ.get(k) for k in ("GROQ_API_KEY", "GEMINI_API_KEY")}
+    try:
+        os.environ["GROQ_API_KEY"] = "gsk_test"
+        os.environ["GEMINI_API_KEY"] = "gem_test"
+        body = client().get("/health").json()
+        check(body["status"] == "ok", "healthy when keys are set and the store answers")
+
+        os.environ.pop("GROQ_API_KEY", None)
+        body = client().get("/health").json()
+        check(body["status"] == "degraded", "degraded when a key is missing")
+        check("error" in body, "explains what is missing")
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 def test_chat_completions_nonstream():
@@ -161,6 +178,48 @@ def test_index_html():
     check("@vapi-ai/web" in r.text, "loads the Vapi web SDK")
     check("speech-start" in r.text and "volume-level" in r.text, "listens for both speakers' events")
     check("favicon.svg" in r.text, "links the favicon")
+
+
+def test_store_error_messages_are_actionable():
+    print("\nVector store failures explain themselves instead of returning a bare 500")
+    import os
+
+    saved = os.environ.get("QDRANT_URL")
+    try:
+        os.environ["QDRANT_URL"] = "https://cluster.cloud.qdrant.io"
+        dns = server._store_error(OSError("[Errno 11001] getaddrinfo failed"))
+        check("6333" in dns, "connection failures mention the Qdrant Cloud port")
+
+        auth = server._store_error(Exception("401 Unauthorized"))
+        check("QDRANT_API_KEY" in auth, "auth failures name the key to check")
+
+        dim = server._store_error(Exception("Vector dimension error: expected dim: 1536"))
+        check("collection" in dim.lower(), "dimension mismatch suggests recreating the collection")
+
+        os.environ.pop("QDRANT_URL", None)
+        unset = server._store_error(Exception("boom"))
+        check("QDRANT_URL" in unset, "an unset store says so plainly")
+    finally:
+        if saved is None:
+            os.environ.pop("QDRANT_URL", None)
+        else:
+            os.environ["QDRANT_URL"] = saved
+
+
+def test_upload_failure_is_not_a_bare_500():
+    print("\nAn upload that fails in the store returns a described error, not a 500")
+
+    class Broken(FakePipeline):
+        def ingest(self, name, data):
+            raise RuntimeError("connection refused")
+
+    server._pipeline = Broken()
+    server.BACKEND_SECRET = ""
+    c = TestClient(server.app, raise_server_exceptions=False)
+    r = c.post("/documents", files={"file": ("x.txt", b"hi")})
+    check(r.status_code != 500, f"status is {r.status_code}, not a bare 500")
+    detail = str(r.json().get("detail", "")).lower()
+    check("qdrant" in detail, "the message names the likely cause")
 
 
 def test_health_warns_without_qdrant():
@@ -284,6 +343,8 @@ if __name__ == "__main__":
         test_documents_crud,
         test_vector_store_qdrant,
         test_index_html,
+        test_store_error_messages_are_actionable,
+        test_upload_failure_is_not_a_bare_500,
         test_health_warns_without_qdrant,
         test_embedder_retries_rate_limit,
         test_vapi_credentials_injection,

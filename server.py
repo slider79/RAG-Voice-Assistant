@@ -27,6 +27,7 @@ from document_loader import DocumentError
 from embeddings import Embedder, EmbeddingError
 from llm import Generator, LLMError
 from rag import RAGPipeline
+from vector_store import VECTOR_DIM as VECTOR_DIM_HINT
 from vector_store import VectorStore, VectorStoreError
 
 RETRIEVE_K = int(os.environ.get("RETRIEVE_K", "4"))
@@ -45,6 +46,15 @@ app.add_middleware(
 _pipeline: RAGPipeline | None = None
 
 
+def _redact(text: str) -> str:
+    """Strip API keys from a message before it is returned to a caller."""
+    for var in ("GROQ_API_KEY", "GEMINI_API_KEY", "QDRANT_API_KEY", "BACKEND_SECRET"):
+        value = os.environ.get(var)
+        if value and len(value) >= 8:
+            text = text.replace(value, "[redacted]")
+    return text
+
+
 def get_pipeline() -> RAGPipeline:
     """Build the RAG pipeline once, lazily, so the server starts without keys."""
     global _pipeline
@@ -52,7 +62,9 @@ def get_pipeline() -> RAGPipeline:
         try:
             _pipeline = RAGPipeline(Embedder(), VectorStore(), Generator())
         except (EmbeddingError, VectorStoreError) as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from None
+            raise HTTPException(status_code=503, detail=_redact(str(exc))) from None
+        except Exception as exc:  # noqa: BLE001 - connection problems land here
+            raise HTTPException(status_code=503, detail=_store_error(exc)) from None
     return _pipeline
 
 
@@ -373,18 +385,30 @@ def favicon() -> Response:
 def health() -> dict:
     have_keys = bool(os.environ.get("GROQ_API_KEY") and os.environ.get("GEMINI_API_KEY"))
     persistent = bool(os.environ.get("QDRANT_URL"))
-    docs = {}
-    if have_keys:
-        try:
-            docs = get_pipeline().sources()
-        except Exception:  # noqa: BLE001
-            docs = {}
     payload = {
         "status": "ok",
         "keys_configured": have_keys,
         "vector_store": "qdrant" if persistent else "in-memory",
-        "documents": len(docs),
+        "documents": 0,
     }
+
+    # Actually reach the store rather than assuming a set variable means it works.
+    if have_keys:
+        try:
+            payload["documents"] = len(get_pipeline().sources())
+            payload["vector_store_reachable"] = True
+        except HTTPException as exc:
+            payload["status"] = "degraded"
+            payload["vector_store_reachable"] = False
+            payload["error"] = exc.detail
+        except Exception as exc:  # noqa: BLE001
+            payload["status"] = "degraded"
+            payload["vector_store_reachable"] = False
+            payload["error"] = _store_error(exc)
+    else:
+        payload["status"] = "degraded"
+        payload["error"] = "GROQ_API_KEY and/or GEMINI_API_KEY are not set."
+
     if not persistent:
         # On serverless this is the usual cause of "my upload disappeared".
         payload["warning"] = (
@@ -399,10 +423,55 @@ def health() -> dict:
 # --------------------------------------------------------------------------
 
 
+def _store_error(exc: Exception) -> str:
+    """Turn a vector-store exception into something a human can act on.
+
+    A bare 500 tells the user nothing, and the most common causes here are all
+    configuration mistakes with distinctive signatures, so name them.
+    """
+    raw = _redact(str(exc)) or exc.__class__.__name__
+    low = raw.lower()
+    url = os.environ.get("QDRANT_URL", "")
+
+    if not url:
+        return (
+            "The vector store is not configured: set QDRANT_URL and QDRANT_API_KEY "
+            f"and redeploy. (underlying error: {raw})"
+        )
+    if "dimension" in low or "vector size" in low or "expected dim" in low:
+        return (
+            "The Qdrant collection was created with a different vector size than "
+            f"the {VECTOR_DIM_HINT}-dimension embeddings being sent. Delete the "
+            "'documents' collection in Qdrant and upload again. "
+            f"(underlying error: {raw})"
+        )
+    if any(w in low for w in ("unauthorized", "forbidden", "401", "403", "api key")):
+        return f"Qdrant rejected the API key. Check QDRANT_API_KEY. (underlying error: {raw})"
+    if any(
+        w in low
+        for w in (
+            "timed out", "timeout", "connect", "resolve", "refused", "name or service",
+            "getaddrinfo", "nodename", "dns", "unreachable", "network", "ssl", "certificate",
+        )
+    ):
+        return (
+            "Could not reach Qdrant. Check QDRANT_URL, and note that Qdrant Cloud "
+            "URLs usually need the :6333 port, for example "
+            f"https://xxxx.cloud.qdrant.io:6333 (current value starts with "
+            f"'{url[:28]}'). (underlying error: {raw})"
+        )
+    return f"Vector store error: {raw}"
+
+
 @app.get("/documents")
 def list_documents() -> dict:
-    pipe = get_pipeline()
-    return {"documents": pipe.sources(), "total_chunks": pipe.total_chunks()}
+    try:
+        pipe = get_pipeline()
+        return {"documents": pipe.sources(), "total_chunks": pipe.total_chunks()}
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=_store_error(exc)) from None
 
 
 @app.post("/documents")
@@ -413,12 +482,23 @@ async def add_document(file: UploadFile = File(...)) -> dict:
         return pipe.ingest(file.filename, data)
     except (DocumentError, EmbeddingError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    except VectorStoreError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+    except Exception as exc:  # noqa: BLE001 - never surface a bare 500
+        # Anything else is almost always the vector store rejecting the write,
+        # so report it in a form that names the likely cause.
+        raise HTTPException(status_code=502, detail=_store_error(exc)) from None
 
 
 @app.delete("/documents/{name}")
 def delete_document(name: str) -> dict:
-    get_pipeline().delete(name)
-    return {"deleted": name}
+    try:
+        get_pipeline().delete(name)
+        return {"deleted": name}
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=_store_error(exc)) from None
 
 
 # --------------------------------------------------------------------------

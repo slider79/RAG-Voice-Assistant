@@ -39,10 +39,17 @@ class VectorStore:
         if client is not None:
             self.client = client
         else:
-            url = os.environ.get("QDRANT_URL", "").strip()
+            url = os.environ.get("QDRANT_URL", "").strip().rstrip("/")
             try:
                 if url:
-                    self.client = QdrantClient(url=url, api_key=os.environ.get("QDRANT_API_KEY") or None)
+                    # A short timeout matters on serverless: without it a bad URL
+                    # ties up the whole request until the platform kills it, which
+                    # surfaces to the user as an unexplained hang.
+                    self.client = QdrantClient(
+                        url=url,
+                        api_key=os.environ.get("QDRANT_API_KEY") or None,
+                        timeout=20,
+                    )
                 else:
                     self.client = QdrantClient(location=":memory:")
             except Exception as exc:  # noqa: BLE001
