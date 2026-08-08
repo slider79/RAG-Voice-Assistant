@@ -105,6 +105,19 @@ At [cloud.qdrant.io](https://cloud.qdrant.io), create a free cluster and copy it
 6. **Save**, then hit **Talk to Assistant** in the dashboard for an instant test call.
 7. **Or use the orb.** Open the deployed site, go to the **Voice** tab, paste your Vapi **public key** (*Vapi dashboard → API Keys → Public Key*) and the **assistant ID** (shown on the assistant page), then tap the orb.
 
+### Make the orb one tap (skip the pasting)
+
+Add two more environment variables in Vercel and the key fields disappear, leaving a site where visitors just tap the orb and talk:
+
+```
+VAPI_PUBLIC_KEY     = pk_...     (Vapi dashboard, API Keys, the Public one)
+VAPI_ASSISTANT_ID   = your assistant's id
+```
+
+Redeploy and the Voice tab is ready to go. The server injects these into the page at request time, so they stay out of git and can be rotated without a commit.
+
+> The Vapi **public** key is designed to run in the browser, which is why embedding it is intended usage rather than a leak; the private key is never used here. Do note that anyone who opens the page can then start a call on your Vapi credits, so keep the URL reasonably private and watch your balance. Leave these variables unset and the site falls back to asking each visitor for their own key.
+
 Upload at least one document first, otherwise Delphi will correctly tell you it has nothing to answer from.
 
 ### The voice orb

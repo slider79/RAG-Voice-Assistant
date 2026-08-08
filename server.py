@@ -176,11 +176,11 @@ text-transform:uppercase;margin-top:7px;min-height:1.1em;text-align:center;color
     <div class="orbstatus" id="orbstatus">Tap the orb to start</div>
     <div class="speaker" id="speaker"></div>
   </div>
-  <div class="vfields">
+  <div class="vfields" id="vfields">
     <input type="password" id="vkey" placeholder="Vapi public key">
     <input type="text" id="vassist" placeholder="Vapi assistant ID">
   </div>
-  <div class="note">Create a Vapi assistant with model <b>Custom LLM</b> pointing at
+  <div class="note" id="vnote">Create a Vapi assistant with model <b>Custom LLM</b> pointing at
   <code id="ep"></code>, then paste its public key and assistant ID above and tap the orb.
   The orb glows <b style="color:var(--user)">blue</b> while you speak and
   <b style="color:var(--agent)">violet</b> while Delphi answers.</div>
@@ -214,6 +214,18 @@ import Vapi from "https://esm.sh/@vapi-ai/web@2.3.9";
 
 const $=id=>document.getElementById(id);
 $("ep").textContent=location.origin+"/chat/completions";
+
+/* Server-injected Vapi credentials. The public key is meant to be used in the
+   browser, so shipping it here is by design; the private key never appears.
+   When both are configured the input fields are hidden and the orb is one tap. */
+const PRESET_KEY="__VAPI_PUBLIC_KEY__", PRESET_ID="__VAPI_ASSISTANT_ID__";
+const PRESET_READY = PRESET_KEY && PRESET_ID;
+if(PRESET_READY){
+  $("vfields").style.display="none";
+  $("vnote").innerHTML='Voice is wired to <code>'+location.origin+'/chat/completions</code>. '+
+    'Tap the orb to talk. It glows <b style="color:var(--user)">blue</b> while you speak and '+
+    '<b style="color:var(--agent)">violet</b> while Delphi answers.';
+}
 
 window.tab=el=>{document.querySelectorAll(".tab").forEach(t=>t.classList.remove("on"));
  document.querySelectorAll(".pane").forEach(p=>p.classList.remove("on"));
@@ -264,7 +276,7 @@ function setState(s){
 }
 
 window.toggleCall=function(){
-  const key=$("vkey").value.trim(),id=$("vassist").value.trim();
+  const key=PRESET_KEY||$("vkey").value.trim(), id=PRESET_ID||$("vassist").value.trim();
   if(live){vapi&&vapi.stop();return;}
   if(!key||!id){ostat.textContent="Enter your Vapi key and assistant ID";return;}
   try{
@@ -290,9 +302,25 @@ loadDocs();
 </script></body></html>"""
 
 
+def _js_safe(value: str) -> str:
+    """Escape a value for embedding inside a JavaScript string literal."""
+    return (
+        value.replace("\\", "\\\\").replace('"', '\\"').replace("<", "\\u003c").replace("\n", "")
+    )
+
+
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
-    return INDEX_HTML
+    """Serve the UI, injecting the Vapi credentials when they are configured.
+
+    VAPI_PUBLIC_KEY is a browser-side key by design (it is what the Vapi web SDK
+    expects), so embedding it in the page is intended usage, not a leak. The
+    private/server key is never referenced here. With both values set, the key
+    fields disappear and the orb starts a call in one tap.
+    """
+    return INDEX_HTML.replace(
+        "__VAPI_PUBLIC_KEY__", _js_safe(os.environ.get("VAPI_PUBLIC_KEY", ""))
+    ).replace("__VAPI_ASSISTANT_ID__", _js_safe(os.environ.get("VAPI_ASSISTANT_ID", "")))
 
 
 # A glowing orb favicon, drawn as SVG so it needs no binary asset.

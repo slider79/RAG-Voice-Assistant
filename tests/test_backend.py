@@ -162,6 +162,38 @@ def test_index_html():
     check("favicon.svg" in r.text, "links the favicon")
 
 
+def test_vapi_credentials_injection():
+    print("\nGET / injects Vapi credentials when they are configured")
+    import os
+
+    saved = {k: os.environ.get(k) for k in ("VAPI_PUBLIC_KEY", "VAPI_ASSISTANT_ID")}
+    try:
+        # Unconfigured: placeholders resolve to empty, so the fields stay visible.
+        os.environ.pop("VAPI_PUBLIC_KEY", None)
+        os.environ.pop("VAPI_ASSISTANT_ID", None)
+        page = client().get("/").text
+        check('PRESET_KEY=""' in page, "no key injected when unset")
+        check("__VAPI_PUBLIC_KEY__" not in page, "placeholder never reaches the browser")
+
+        # Configured: both values are embedded for a one-tap call.
+        os.environ["VAPI_PUBLIC_KEY"] = "pk_test_123"
+        os.environ["VAPI_ASSISTANT_ID"] = "asst_abc"
+        page = client().get("/").text
+        check('PRESET_KEY="pk_test_123"' in page, "public key is embedded")
+        check('PRESET_ID="asst_abc"' in page, "assistant id is embedded")
+
+        # A value containing quotes or markup cannot break out of the JS string.
+        os.environ["VAPI_PUBLIC_KEY"] = 'a"</script><b>'
+        page = client().get("/").text
+        check('a"</script>' not in page, "quotes and markup are escaped")
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
 def test_favicon():
     print("\nGET /favicon.svg serves the orb icon")
     r = client().get("/favicon.svg")
@@ -189,6 +221,7 @@ if __name__ == "__main__":
         test_documents_crud,
         test_vector_store_qdrant,
         test_index_html,
+        test_vapi_credentials_injection,
         test_favicon,
         test_bearer_secret_guard,
     ):
